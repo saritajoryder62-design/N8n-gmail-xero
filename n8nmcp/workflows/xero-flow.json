@@ -1,0 +1,254 @@
+{
+  "name": "Xero flow",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {}
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "q": "has:attachment (invoice OR bill OR receipt)"
+        },
+        "options": {
+          "dataPropertyAttachmentsPrefixName": "attachment_",
+          "downloadAttachments": true
+        }
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.4,
+      "position": [-720, -48],
+      "id": "gmail-trigger-1",
+      "name": "Gmail Trigger",
+      "credentials": {
+        "gmailOAuth2": {
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const email = $input.item.json;\n\n// Gmail Trigger has \"Download Attachments\" enabled, so it parses the raw\n// email with mailparser instead of returning the Gmail API message resource.\n// That means there is no payload.headers array here — subject/from/headers\n// are already flattened onto the top-level item.\nconst subject = email.subject || '';\n\nlet fromName = '';\nlet fromEmail = '';\n\nif (email.from && Array.isArray(email.from.value) && email.from.value.length) {\n  // Structured address from mailparser\n  fromName = email.from.value[0].name || '';\n  fromEmail = email.from.value[0].address || '';\n} else {\n  // Fallback: parse from the raw 'From' header line\n  const fromHeader = (email.from && email.from.text) || (email.headers && email.headers.from) || '';\n  const emailMatch = fromHeader.match(/<(.+)>/);\n  fromEmail = emailMatch ? emailMatch[1] : fromHeader;\n  fromName = fromHeader.replace(/<.*>/, '').replace(/^From:\\s*/i, '').trim();\n}\n\nreturn {\n  json: {\n    ...email,\n    subject,\n    fromName,\n    fromEmail\n  },\n  binary: $input.item.binary\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-576, -48],
+      "id": "parse-headers-1",
+      "name": "Parse Email Headers"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "attachment-present",
+              "leftValue": "={{ Object.keys($binary || {}).length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [-368, -48],
+      "id": "has-attachment-1",
+      "name": "Has Attachment"
+    },
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "getAll",
+        "organizationId": "YOUR_XERO_TENANT_ID",
+        "limit": 1,
+        "options": {
+          "where": "={{ \"EmailAddress==\\\"\" + $json.fromEmail + \"\\\"\" }}"
+        }
+      },
+      "type": "n8n-nodes-base.xero",
+      "typeVersion": 1,
+      "position": [-144, -48],
+      "id": "xero-find-contact-1",
+      "name": "Xero - Find Contact by Email",
+      "alwaysOutputData": true,
+      "credentials": {
+        "xeroOAuth2Api": {
+          "name": "Xero account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "organizationId": "YOUR_XERO_TENANT_ID",
+        "type": "ACCPAY",
+        "contactId": "={{ $json.ContactID }}",
+        "lineItemsUi": {
+          "lineItemsValues": [
+            {
+              "description": "={{ 'Invoice from email: ' + $('Parse Email Headers').item.json.subject }}",
+              "unitAmount": "0.00",
+              "taxType": "NONE"
+            }
+          ]
+        },
+        "additionalFields": {
+          "reference": "={{ $('Parse Email Headers').item.json.subject }}",
+          "status": "DRAFT"
+        }
+      },
+      "type": "n8n-nodes-base.xero",
+      "typeVersion": 1,
+      "position": [80, -48],
+      "id": "xero-create-invoice-1",
+      "name": "Xero - Create Draft Invoice",
+      "credentials": {
+        "xeroOAuth2Api": {
+          "name": "Xero account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return {\n  json: $input.item.json,\n  binary: $('Parse Email Headers').item.binary\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [304, -48],
+      "id": "reattach-binary-1",
+      "name": "Reattach Attachment"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ 'https://api.xero.com/api.xro/2.0/Invoices/' + $json.InvoiceID + '/Attachments/' + $binary.attachment_0.fileName }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "xeroOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Xero-tenant-id",
+              "value": "YOUR_XERO_TENANT_ID"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "attachment_0",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [528, -48],
+      "id": "xero-upload-attachment-1",
+      "name": "Xero - Upload Attachment",
+      "credentials": {
+        "xeroOAuth2Api": {
+          "name": "Xero account"
+        }
+      }
+    },
+    {
+      "id": "34900438-9ed7-4f86-a9ec-a63c30c934e0",
+      "name": "Contact Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [-40, -48],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 1,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "contact-found",
+              "leftValue": "={{ $json.ContactID }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "42799221-95aa-4213-a3b4-51a493ab1f7b",
+      "name": "Xero - Create Contact",
+      "type": "n8n-nodes-base.xero",
+      "typeVersion": 1,
+      "position": [-40, 140],
+      "parameters": {
+        "resource": "contact",
+        "operation": "create",
+        "organizationId": "YOUR_XERO_TENANT_ID",
+        "name": "={{ $('Parse Email Headers').item.json.fromName || $('Parse Email Headers').item.json.fromEmail }}",
+        "additionalFields": {
+          "emailAddress": "={{ $('Parse Email Headers').item.json.fromEmail }}"
+        }
+      },
+      "credentials": {
+        "xeroOAuth2Api": {
+          "name": "Xero account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Gmail Trigger": {
+      "main": [[{ "node": "Parse Email Headers", "type": "main", "index": 0 }]]
+    },
+    "Parse Email Headers": {
+      "main": [[{ "node": "Has Attachment", "type": "main", "index": 0 }]]
+    },
+    "Has Attachment": {
+      "main": [[{ "node": "Xero - Find Contact by Email", "type": "main", "index": 0 }]]
+    },
+    "Xero - Find Contact by Email": {
+      "main": [[{ "node": "Contact Found?", "type": "main", "index": 0 }]]
+    },
+    "Contact Found?": {
+      "main": [
+        [{ "node": "Xero - Create Draft Invoice", "type": "main", "index": 0 }],
+        [{ "node": "Xero - Create Contact", "type": "main", "index": 0 }]
+      ]
+    },
+    "Xero - Create Contact": {
+      "main": [[{ "node": "Xero - Create Draft Invoice", "type": "main", "index": 0 }]]
+    },
+    "Xero - Create Draft Invoice": {
+      "main": [[{ "node": "Reattach Attachment", "type": "main", "index": 0 }]]
+    },
+    "Reattach Attachment": {
+      "main": [[{ "node": "Xero - Upload Attachment", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
